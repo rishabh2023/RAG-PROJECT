@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from contextlib import asynccontextmanager
 from app.config import settings
-from app.api.endpoints import chat, eligibility
+from app.api.endpoints import chat, eligibility, ingest
 from app.core.security import verify_bearer_token
 import time
 
@@ -70,6 +70,13 @@ app.include_router(
     dependencies=[Depends(verify_token)]
 )
 
+app.include_router(
+    ingest.router,
+    prefix=settings.API_PREFIX,
+    tags=["ingest"],
+    dependencies=[Depends(verify_token)]
+)
+
 
 
 @app.get("/")
@@ -81,6 +88,12 @@ async def root():
         "docs_url": f"{settings.API_PREFIX}/docs",
         "health_check": f"{settings.API_PREFIX}/health"
     }
+
+
+
+@app.get(f"{settings.API_PREFIX}/health")
+async def health():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn

@@ -15,7 +15,9 @@ class Settings(BaseSettings):
     # Vector DB Configuration
     PINECONE_API_KEY: Optional[str] = None
     PINECONE_INDEX_NAME: str = "loan-support-v1"
-    PINECONE_ENVIRONMENT: str = "us-west1-gcp-free"
+    PINECONE_ENVIRONMENT: str = "us-west1-gcp-free"  # (kept for compat if you use old client)
+    PINECONE_NAMESPACE: str = "default"              # <-- ADD THIS
+    SBERT_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"  # <-- ADD THIS
     USE_LOCAL_FAISS: bool = True
 
     # Security
@@ -32,14 +34,13 @@ class Settings(BaseSettings):
     MASK_PAN: bool = True
     MASK_AADHAAR: bool = True
 
-    # 🔧 Add this so your .env key is recognized
+    # Logging
     LOG_LEVEL: str = "INFO"
 
-    # 🔧 Use v2 config + ignore extra env keys so future adds don’t crash
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=False,
-        extra="ignore",     # <- prevents "extra_forbidden"
+        extra="ignore",
     )
 
 settings = Settings()

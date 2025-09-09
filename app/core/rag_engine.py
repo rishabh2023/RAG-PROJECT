@@ -1,82 +1,124 @@
-import json
-import time
-from typing import List, Dict, Any, Optional
+# app/core/rag_engine.py
+from typing import List, Dict, Any
+from dataclasses import dataclass
+
+from sentence_transformers import SentenceTransformer
+from pinecone import Pinecone
+import google.generativeai as genai
+
 from app.config import settings
 
-class MockRAGEngine:
-    """Mock RAG engine for development without heavy ML dependencies"""
-    
-    def __init__(self):
-        self.mock_documents = [
-            {
-                "id": "doc_1",
-                "title": "Home Loan Eligibility Criteria",
-                "content": "For salaried individuals, minimum monthly income should be ₹25,000. For self-employed, minimum annual income should be ₹3 lakh. Age should be between 21-65 years.",
-                "source": "loan_guidelines.pdf",
-                "confidence": 0.85
-            },
-            {
-                "id": "doc_2", 
-                "title": "Karnataka Stamp Duty",
-                "content": "In Karnataka, stamp duty for home purchase is 5% for women and 6% for men. Additional 1% registration charges apply.",
-                "source": "karnataka_stamp_duty.pdf",
-                "confidence": 0.92
-            },
-            {
-                "id": "doc_3",
-                "title": "Required Documents",
-                "content": "Required documents include: Salary slips (3 months), Bank statements (6 months), Form 16, Identity proof (Aadhaar/PAN), Property documents.",
-                "source": "documentation_guide.pdf", 
-                "confidence": 0.88
-            }
-        ]
-    
-    async def retrieve_documents(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Mock document retrieval with simple keyword matching"""
-        
-        start_time = time.time()
-        
-        # Simple keyword-based matching
-        query_lower = query.lower()
-        relevant_docs = []
-        
-        for doc in self.mock_documents:
-            # Check if any query terms appear in document content or title
-            content_lower = doc["content"].lower() + " " + doc["title"].lower()
-            
-            # Simple scoring based on keyword overlap
-            score = 0
-            query_words = query_lower.split()
-            for word in query_words:
-                if word in content_lower:
-                    score += 1
-            
-            if score > 0:
-                doc_copy = doc.copy()
-                doc_copy["relevance_score"] = score / len(query_words)
-                relevant_docs.append(doc_copy)
-        
-        # Sort by relevance
-        relevant_docs.sort(key=lambda x: x["relevance_score"], reverse=True)
-        
-        processing_time = (time.time() - start_time) * 1000
-        
-        return {
-            "documents": relevant_docs[:top_k],
-            "processing_time_ms": processing_time,
-            "total_docs": len(relevant_docs)
-        }
-    
-    def add_document(self, doc_id: str, title: str, content: str, source: str):
-        """Add a document to the mock index"""
-        new_doc = {
-            "id": doc_id,
-            "title": title,
-            "content": content,
-            "source": source,
-            "confidence": 0.80
-        }
-        self.mock_documents.append(new_doc)
 
-# For now, use mock RAG engine
-rag_engine = MockRAGEngine()
+@dataclass
+class SearchHit:
+    text: str
+    score: float
+    bank: str
+    source: str
+    page: int
+
+
+class PineconeRAGEngine:
+    def __init__(self):
+        if not settings.PINECONE_API_KEY:
+            raise RuntimeError("PINECONE_API_KEY not set")
+        self.pc = Pinecone(api_key=settings.PINECONE_API_KEY)
+        self.index_name = getattr(settings, "PINECONE_INDEX_NAME", "loan-docs")
+        self.namespace = getattr(settings, "PINECONE_NAMESPACE", "default")
+        self.model_name = getattr(settings, "SBERT_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+        self.embedder = SentenceTransformer(self.model_name)
+
+        # LLM config (Gemini)
+        if not settings.GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY not set")
+        genai.configure(api_key=settings.GEMINI_API_KEY)
+        self.model = genai.GenerativeModel(
+            settings.GEMINI_MODEL or "gemini-1.5-flash",
+            generation_config={
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "max_output_tokens": 700,
+            },
+        )
+
+        self.index = self.pc.Index(self.index_name)
+
+    def embed(self, text: str):
+        return self.embedder.encode(text).tolist()
+
+    def retrieve(self, query: str, top_k: int = 6) -> List[SearchHit]:
+        q = self.embed(query)
+        res = self.index.query(
+            namespace=self.namespace,
+            vector=q,
+            top_k=top_k,
+            include_metadata=True
+        )
+        hits: List[SearchHit] = []
+        for m in res.matches or []:
+            meta = m.metadata or {}
+            hits.append(SearchHit(
+                text=meta.get("text", ""),
+                score=m.score or 0.0,
+                bank=meta.get("bank", "Unknown"),
+                source=meta.get("source", ""),
+                page=int(meta.get("page", 0)),
+            ))
+        return hits
+
+    def synthesize(self, question: str, hits: List[SearchHit]) -> Dict[str, Any]:
+        # Build compact grounded context
+        context_blocks = []
+        for h in hits:
+            if h.text.strip():
+                context_blocks.append(f"[{h.bank} | p{h.page} | score={h.score:.3f}]\n{h.text}")
+            if len(context_blocks) >= 8:
+                break
+
+        # General-purpose, grounded prompt (no JSON output)
+        prompt = f"""
+You are a helpful, precise assistant. Answer **only** using the CONTEXT below.
+If something is not stated in the context, say: "Not specified in the provided documents."
+Do not invent banks, figures, policies, dates, or fees.
+
+Formatting rules:
+- No code fences, no JSON, no markdown backticks.
+- Use short paragraphs and bullet points.
+- If multiple banks appear, show **bank-wise** bullets like: "• Axis Bank: …"
+- Write numbers with units (e.g., 9.65% p.a., ₹10,000 + GST).
+- Keep it concise and clear for a layperson; add a one-line summary at the end.
+- Default to English unless the user’s question is in another language.
+
+QUESTION:
+{question}
+
+CONTEXT:
+{chr(10).join(context_blocks)}
+"""
+
+        resp = self.model.generate_content(prompt)
+        text = (resp.text or "").strip()
+
+        # Fallback if model returns nothing
+        if not text:
+            text = "I couldn’t find this in the provided documents."
+
+        # Return a dict so upstream can still access citations if needed
+        return {
+            "answer": text,
+            "banks": [{"name": h.bank, "confidence": h.score} for h in hits],
+            "citations": [{"bank": h.bank, "page": h.page, "score": h.score, "source": h.source} for h in hits],
+        }
+
+    def ask(self, question: str, top_k: int = 6) -> Dict[str, Any]:
+        hits = self.retrieve(question, top_k=top_k)
+        if not hits:
+            return {"answer": "I couldn’t find this in the provided documents.", "banks": [], "citations": []}
+        out = self.synthesize(question, hits)
+        if "citations" not in out:
+            out["citations"] = [{"bank": h.bank, "page": h.page, "score": h.score, "source": h.source} for h in hits]
+        return out
+
+
+# Singleton
+rag_engine = PineconeRAGEngine()
