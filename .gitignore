@@ -1,0 +1,67 @@
+# -----------------------
+# Python
+# -----------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+*.log
+
+# Byte-compiled / cache
+*.pyc
+*.pkl
+*.db
+*.sqlite3
+
+# -----------------------
+# Virtual Environments
+# -----------------------
+venv/
+.envrc
+.venv/
+env/
+ENV/
+*.env.local
+
+# -----------------------
+# Environment / Secrets
+# -----------------------
+.env
+.env.*
+!.env.example   # keep only the example env
+
+# -----------------------
+# FastAPI / Uvicorn
+# -----------------------
+*.pid
+*.log
+*.coverage
+htmlcov/
+.coverage*
+
+# -----------------------
+# Data & Artifacts
+# -----------------------
+app/data/documents/*
+app/data/embeddings/*
+!app/data/.gitkeep   # keep placeholder if needed
+
+# -----------------------
+# IDE / Editor
+# -----------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# -----------------------
+# Testing
+# -----------------------
+.pytest_cache/
+.coverage
+.tox/
+.mypy_cache/
+.cache/
