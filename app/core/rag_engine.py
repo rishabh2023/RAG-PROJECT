@@ -35,9 +35,9 @@ class PineconeRAGEngine:
         self.model = genai.GenerativeModel(
             settings.GEMINI_MODEL or "gemini-1.5-flash",
             generation_config={
-                "temperature": 0.2,
+                "temperature": 0.4,
                 "top_p": 0.9,
-                "max_output_tokens": 700,
+                "max_output_tokens": 600,
             },
         )
 

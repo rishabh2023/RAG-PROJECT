@@ -1,63 +1,75 @@
 from fastapi import APIRouter, HTTPException
-from app.models.request_models import EligibilityRequest
-from app.models.response_models import EligibilityResponse
+from pydantic import BaseModel, Field
+from typing import Optional
 
-router = APIRouter()
+router = APIRouter(prefix="/eligibility", tags=["eligibility"])
 
-@router.post("/eligibility", response_model=EligibilityResponse)
-async def calculate_eligibility(request: EligibilityRequest):
-    """Calculate loan eligibility based on income and FOIR"""
-    
+class EligibilityRequest(BaseModel):
+    monthly_income: float = Field(..., gt=0, description="Net monthly income")
+    monthly_obligations: float = Field(0, ge=0, description="Existing EMIs/Bills")
+    roi: float = Field(..., gt=0, description="Annual interest rate in % (e.g. 9.5)")
+    tenure_months: int = Field(..., gt=0, description="Tenure in months")
+    loan_amount: Optional[float] = Field(None, gt=0, description="Proposed loan amount (optional)")
+    foir_cap: float = Field(0.45, gt=0, lt=1, description="FOIR cap as fraction (e.g. 0.45 for 45%)")
+
+class EligibilityResponse(BaseModel):
+    emi: Optional[float] = None
+    foir: Optional[float] = None
+    eligible: Optional[bool] = None
+    foir_cap: float
+    max_eligible_emi: float
+    max_eligible_loan: float
+    notes: list[str]
+
+def _emi_from_principal(P: float, annual_rate_pct: float, n_months: int) -> float:
+    r = (annual_rate_pct / 100.0) / 12.0
+    if r == 0:
+        return P / n_months
+    factor = (1 + r) ** n_months
+    return P * r * factor / (factor - 1)
+
+def _principal_from_emi(E: float, annual_rate_pct: float, n_months: int) -> float:
+    r = (annual_rate_pct / 100.0) / 12.0
+    if r == 0:
+        return E * n_months
+    factor = (1 + r) ** n_months
+    return E * (factor - 1) / (r * factor)
+
+@router.post("/calculate", response_model=EligibilityResponse)
+def calculate(req: EligibilityRequest):
     try:
-        # Calculate maximum EMI based on FOIR
-        max_emi = (request.monthly_income * request.foir_cap / 100) - request.existing_obligations
-        
-        if max_emi <= 0:
+        # Max EMI allowed by FOIR cap
+        max_emi = max(0.0, req.monthly_income * req.foir_cap - req.monthly_obligations)
+        max_loan = _principal_from_emi(max_emi, req.roi, req.tenure_months)
+
+        notes = [
+            f"FOIR cap = {int(req.foir_cap*100)}%. Max eligible EMI = income*cap - obligations.",
+            "Formulas: EMI = P*r*(1+r)^n / ((1+r)^n - 1); P from EMI is the inverse.",
+        ]
+
+        if req.loan_amount:
+            emi = _emi_from_principal(req.loan_amount, req.roi, req.tenure_months)
+            foir = (req.monthly_obligations + emi) / req.monthly_income
+            eligible = foir <= req.foir_cap
             return EligibilityResponse(
-                max_emi=0,
-                estimated_loan_amount=0,
-                foir_used=100.0,
-                monthly_surplus=0,
-                eligibility_status="Not Eligible",
-                disclaimer="Your existing obligations exceed the FOIR limit. Please reduce existing EMIs or increase income."
+                emi=round(emi, 2),
+                foir=round(foir, 4),
+                eligible=eligible,
+                foir_cap=req.foir_cap,
+                max_eligible_emi=round(max_emi, 2),
+                max_eligible_loan=round(max_loan, 2),
+                notes=notes,
             )
-        
-        # Calculate loan amount using EMI formula
-        # EMI = P * r * (1+r)^n / ((1+r)^n - 1)
-        # Rearranging: P = EMI * ((1+r)^n - 1) / (r * (1+r)^n)
-        
-        monthly_rate = request.interest_rate / (12 * 100)
-        tenure_months = request.tenure_years * 12
-        
-        if monthly_rate == 0:
-            estimated_loan_amount = max_emi * tenure_months
         else:
-            power_factor = (1 + monthly_rate) ** tenure_months
-            estimated_loan_amount = max_emi * (power_factor - 1) / (monthly_rate * power_factor)
-        
-        # Calculate actual FOIR used
-        total_emi = max_emi + request.existing_obligations
-        foir_used = (total_emi / request.monthly_income) * 100
-        
-        # Calculate monthly surplus
-        monthly_surplus = request.monthly_income - total_emi
-        
-        # Determine eligibility status
-        if estimated_loan_amount >= 500000:  # Minimum 5 lakh
-            eligibility_status = "Eligible"
-        elif estimated_loan_amount >= 100000:
-            eligibility_status = "Conditionally Eligible"
-        else:
-            eligibility_status = "Not Eligible"
-        
-        return EligibilityResponse(
-            max_emi=round(max_emi, 2),
-            estimated_loan_amount=round(estimated_loan_amount, 2),
-            foir_used=round(foir_used, 2),
-            monthly_surplus=round(monthly_surplus, 2),
-            eligibility_status=eligibility_status,
-            disclaimer="This is an indicative calculation. Final eligibility depends on credit score, property value, and bank policies. Please consult our loan advisor for accurate assessment."
-        )
-        
+            # No proposed loan; return max capacity
+            return EligibilityResponse(
+                emi=None,
+                foir=None,
+                eligible=None,
+                foir_cap=req.foir_cap,
+                max_eligible_emi=round(max_emi, 2),
+                max_eligible_loan=round(max_loan, 2),
+                notes=notes + ["No loan_amount provided; returning maximum eligibility only."],
+            )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Eligibility calculation failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Eligibility calculation failed: {e}")
