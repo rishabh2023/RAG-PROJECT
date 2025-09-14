@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
 from typing import Optional
 
+
 from app.rag.ingest import ingest_directory
 from app.config import settings
 

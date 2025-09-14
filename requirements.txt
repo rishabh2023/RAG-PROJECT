@@ -4,7 +4,6 @@ pydantic
 pydantic-settings
 python-multipart
 google-generativeai
-pinecone-client
 faiss-cpu
 PyPDF2
 numpy
@@ -21,3 +20,4 @@ reportlab
 aiofiles
 python-jose[cryptography]
 passlib[bcrypt]
+rank-bm25

@@ -15,8 +15,6 @@ class ChatQuery(BaseModel):
 def ask_bank_bot(body: ChatQuery):
     try:
         result = rag_engine.ask(body.query, top_k=body.top_k or 5)
-       
-       
         return {"answer": result.get("answer", "I couldn’t find this in the provided documents.")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

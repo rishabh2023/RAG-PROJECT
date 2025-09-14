@@ -9,6 +9,7 @@ from sentence_transformers import SentenceTransformer
 from pinecone import Pinecone, ServerlessSpec
 
 from app.config import settings
+from app.services.retrieval import register_chunks
 
 def load_pdfs(pdf_dir: str) -> List[Dict]:
     """Load PDFs and return list of dicts with text per page."""
@@ -100,4 +101,11 @@ def ingest_directory(pdf_dir: str):
     docs = load_pdfs(pdf_dir)
     chunks = chunk_docs(docs)
     upsert_chunks(chunks)
+    # Register chunks for hybrid search (BM25+semantic)
+    try:
+        simple_chunks = [{"id": c["id"], "text": c.get("content", ""), "metadata": c.get("metadata", {})} for c in chunks]
+        register_chunks(simple_chunks)
+    except Exception as _e:
+        # Do not fail ingest if registration fails; just log in real app
+        pass
     return {"pages": len(docs), "chunks": len(chunks)}
